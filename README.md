@@ -35,24 +35,26 @@ TRAIN_OOF_BLEND_PLUS_DEV_AONLY_AFFINE_RETRAIN
 
 Task 1 对给定文本及 Aspect 预测两个连续值：Valence（V，情感效价）与 Arousal（A，情感唤醒度）。本项目将预测限制在1到9的范围内。
 
+以下公式使用普通文本显示：sqrt表示平方根，Σ表示对所有样本求和，pred表示预测值，true表示真实标签；clip(x, 1, 9)表示将x限制在1到9。
+
 单维 RMSE 为：
 
-$$
-\operatorname{RMSE}_V=\sqrt{\frac{1}{N}\sum_i(\hat V_i-V_i)^2},\qquad
-\operatorname{RMSE}_A=\sqrt{\frac{1}{N}\sum_i(\hat A_i-A_i)^2}.
-$$
+```text
+RMSE_V = sqrt( Σ(V_pred[i] - V_true[i])² / N )
+RMSE_A = sqrt( Σ(A_pred[i] - A_true[i])² / N )
+```
 
 本项目使用的联合指标为：
 
-$$
-\operatorname{RMSE}_{VA}=\sqrt{\operatorname{RMSE}_V^2+\operatorname{RMSE}_A^2}.
-$$
+```text
+RMSE_VA = sqrt( RMSE_V² + RMSE_A² )
+```
 
 因此1.2390不是两个RMSE的算术平均，也不是再除以2后的均方根。用日志中已经四舍五入的数字核算：
 
-$$
-\sqrt{0.9956^2+0.7375^2}\approx1.2390.
-$$
+```text
+sqrt(0.9956² + 0.7375²) ≈ 1.2390
+```
 
 MAE衡量平均绝对误差；Pearson相关系数反映预测与标签的线性相关程度。相关性较高不保证绝对误差较低，因为预测仍可能存在整体偏移或尺度偏差。
 
@@ -104,13 +106,13 @@ Qwen提供额外预测及置信度信息。旧流程会处理Qwen预测的校准
 
 V和A不必使用相同权重。基础融合可以写作：
 
-$$
-\hat V_{base}=w_{R,V}\hat V_R+w_{B,V}\hat V_B+w_{Q,V}\hat V_Q,
-$$
+```text
+V_base = w_RV × V_RoBERTa + w_BV × V_BGE + w_QV × V_Qwen
+```
 
-$$
-\hat A_{base}=w_{R,A}\hat A_R+w_{B,A}\hat A_B+w_{Q,A}\hat A_Q.
-$$
+```text
+A_base = w_RA × A_RoBERTa + w_BA × A_BGE + w_QA × A_Qwen
+```
 
 上述公式解释结构；这里的具体权重并非0.12/0.88。**0.12/0.88属于后面的专家与Ridge两分支融合。**
 
@@ -118,18 +120,17 @@ $$
 
 原脚本在基础融合之后构造低维特征，训练Ridge预测A的残差：
 
-$$
-r_{A,i}=A_i-\hat A_{base,i}.
-$$
+```text
+A_residual[i] = A_true[i] - A_base[i]
+```
 
 残差特征包括基础融合A、RoBERTa A、BGE A、校准后Qwen A、Qwen置信度、融合V，以及模型间差值等，总计10维。
 
 脚本在DEV交叉验证中选择Ridge正则系数、修正强度和修正上限，随后在完整DEV上重拟合残差模型，用于DEV与TEST预测。概念上为：
 
-$$
-\hat A_{ridge}=\operatorname{clip}_{[1,9]}
-\left(\hat A_{base}+\operatorname{Correction}(\hat r_A)\right).
-$$
+```text
+A_ridge = clip(A_base + Correction(A_residual_pred), 1, 9)
+```
 
 这里的Correction受修正强度与上限控制，不能理解为无约束直接加残差。完整DEV重拟合后的DEV指标属于拟合后结果，不是独立验证结果。
 
@@ -159,9 +160,9 @@ $$
 
 专家训练结合A的回归误差、相关性损失和序数分类损失：
 
-$$
-L=L_{MSE}+\lambda_{corr}(1-r)+\lambda_{ord}L_{ordinal}.
-$$
+```text
+Loss = MSE + λ_corr × (1 - Pearson_r) + λ_ord × ordinal_loss
+```
 
 这使模型同时学习数值接近、相对变化及强度区间。各损失系数及其实际生效值应以本次训练参数或checkpoint配置为准。
 
@@ -185,9 +186,9 @@ TRAIN OOF selected alpha=0.12 specialist + 0.88 ridge | RMSE_A=0.6959
 
 由此得到：
 
-$$
-\hat A_{blend}=0.12\hat A_{specialist}+0.88\hat A_{ridge}.
-$$
+```text
+A_blend = 0.12 × A_specialist + 0.88 × A_ridge
+```
 
 专家单独的OOF误差高于Ridge代理，但少量加入后，融合误差从0.6969降至0.6959，说明在这组训练侧预测中存在一定误差互补。改善幅度很小，不应描述为显著提升。
 
@@ -214,9 +215,9 @@ $$
 
 在DEV上拟合线性回归：
 
-$$
-A_i\approx a\hat A_{blend,i}+b.
-$$
+```text
+A_true[i] ≈ a × A_blend[i] + b
+```
 
 本次日志给出的参数为：
 
@@ -227,16 +228,15 @@ b = 0.623076
 
 因此最终预测为：
 
-$$
-\boxed{\hat A_{final}=\operatorname{clip}_{[1,9]}
-(0.916995\hat A_{blend}+0.623076)}.
-$$
+```text
+A_final = clip(0.916995 × A_blend + 0.623076, 1, 9)
+```
 
 V维保持不变：
 
-$$
-\boxed{\hat V_{final}=\hat V_{blend}}.
-$$
+```text
+V_final = V_blend
+```
 
 这里“V不变”特指**最后仿射校准这一步**不修改V，不表示前面的V没有进行模型融合或其他处理。
 
